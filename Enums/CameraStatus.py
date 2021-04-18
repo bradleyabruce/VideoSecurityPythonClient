@@ -2,10 +2,11 @@ from enum import Enum
 
 
 class CameraStatus(Enum):
-    Online = 1
-    Restarting = 1
-    Offline = 3
-    StartingUp = 4
-    WaitingForServer = 5
-    ErrorOccurred = 6
+    Offline = 1
+    CameraBootStart = 2
+    CameraBootComplete = 3
+    ConnectingToServerStart = 4
+    ConnectingToServerComplete = 5
+    Recording = 6
+    Error = 7
 

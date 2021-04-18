@@ -3,8 +3,15 @@ import sys
 import uuid
 from requests import get
 from DL import DBConn
-from Enums import CameraStatus
+from Enums.CameraStatus import CameraStatus
+from Enums.eTransactionType import eTransactionType
 from Objects.Camera import Camera
+from Objects.Exceptions import NetworkAddressNotAvailableException, MacAddressNotAvailableException
+from Objects.Query import Query
+from datetime import datetime
+
+sql_select = "SELECT c.CameraID, c.Name, c.InternalAddress, c.ExternalAddress, c.MacAddress, c.PortNumber, c.CameraStatusID, c.DirectoryPath "
+sql_from = " FROM tCameras c "
 
 
 def get_local_ip():
@@ -15,13 +22,13 @@ def get_local_ip():
             host_name = socket.gethostname()
             local_ip = socket.gethostbyname(host_name + ".local")
 
-        elif os == "darwin":
+        else:
             # MacOS
             local_ip = socket.gethostbyname_ex(socket.gethostname())[-1][0]
 
         return local_ip
     except Exception:
-        return "Unavailable"
+        raise NetworkAddressNotAvailableException
 
 
 def get_external_ip():
@@ -29,7 +36,7 @@ def get_external_ip():
         external_ip = get('https://api.ipify.org').text
         return external_ip
     except Exception:
-        return "Unavailable"
+        raise NetworkAddressNotAvailableException
 
 
 def get_current_mac_address():
@@ -38,121 +45,101 @@ def get_current_mac_address():
                                 for ele in range(0, 8 * 6, 8)][::-1])
         return mac_address
     except Exception:
-        return "Unavailable"
+        raise MacAddressNotAvailableException
 
 
 def startup():
     try:
         mac_address = get_current_mac_address()
-        camera = query_values_from_db(mac_address)
+        camera = get_camera_from_mac_address(mac_address)
 
         # Update existing data and return
         if camera is not None:
-            if update_values_into_db(camera):
-                camera = query_values_from_db(mac_address)
-                return camera
-            else:
-                return None
-
+            update_startup_values_into_db(camera)
         # Create new entry and return
         else:
-            if insert_default_values_into_db(mac_address):
-                camera = query_values_from_db(mac_address)
-                return camera
-            else:
-                return None
+            insert_default_values_into_db(mac_address)
+
+        return get_camera_from_mac_address(mac_address)
+
 
     except Exception as err:
+
         print(err)
 
 
-def query_values_from_db(mac_address):
+def get_camera_from_mac_address(mac_address):
     camera = Camera()
-    if mac_address is not "Error":
-        query = "SELECT c.CameraID FROM tCamera c WHERE c.MacAddress = '" + mac_address + "';"
 
-        query = "SELECT c.CameraID, c.Name, c.MacAddress, c.InternalIPAddress, c.ExternalIPAddress, c.Height, c.Width, cd.DirectoryPath, c.CameraStatusID" \
-                " FROM tCamera c" \
-                " LEFT JOIN tCameraDirectory cd ON c.CameraID = cd.CameraID" \
-                " WHERE c.MacAddress = '" + mac_address + "';"
-
-        result = DBConn.query_return(query)
-        if len(result) > 0:
-            camera.mapper(result[0])
-            return camera
-        else:
-            return None
+    query = Query()
+    query.TransactionType = eTransactionType.Query
+    query.Sql = sql_select + sql_from + " WHERE c.MacAddress = %s"
+    query.Args = [str(mac_address)]
+    result = DBConn.single_query(query)
+    if len(result) > 0:
+        camera.mapper(result[0])
+        return camera
+    else:
+        return None
 
 
 def insert_default_values_into_db(mac_address):
-    try:
-        internal_ip = get_local_ip()
-        external_ip = get_external_ip()
+    camera = Camera()
+    camera.Name = "Camera"
+    camera.MacAddress = mac_address
+    camera.InternalAddress = get_local_ip()
+    camera.ExternalAddress = get_external_ip()
+    camera.PortNumber = 8089
+    camera.CameraStatusID = CameraStatus.CameraBootStart.value
+    camera.DirectoryPath = ""
 
-        # Insert into tCamera
-        camera = Camera()
-        camera.Name = "Camera"
-        camera.MacAddress = mac_address
-        camera.InternalIPAddress = internal_ip
-        camera.ExternalIPAddress = external_ip
-        camera.Height = 1088
-        camera.Width = 1920
-        camera.StatusID = CameraStatus.CameraStatus.StartingUp.value
-        camera.CameraID = 0
-        camera.DirectoryPath = ""
+    insert_query = Query()
+    insert_query.TransactionType = eTransactionType.Insert
+    insert_query.Sql = "INSERT INTO tCameras (Name, MacAddress, InternalAddress, ExternalAddress, PortNumber, CameraStatusID, DirectoryPath) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+    insert_query.Args = [str(camera.Name), str(camera.MacAddress), str(camera.InternalAddress),
+                         str(camera.ExternalAddress), str(camera.PortNumber), str(camera.CameraStatusID),
+                         str(camera.DirectoryPath)]
+    camera.CameraID = DBConn.single_query(insert_query)
+    __insert_camera_log(camera.CameraID, CameraStatus.CameraBootStart.value, "Camera is starting.")
 
-        query = "INSERT INTO tCamera" \
-                " (Name, MacAddress, InternalIPAddress, ExternalIPAddress, Height, Width,CameraStatusID)" \
-                " VALUES" \
-                " ('" + camera.Name + "' ,'" + camera.MacAddress + "', '" + camera.InternalIPAddress + "', '" + camera.ExternalIPAddress + "', " + str(camera.Height) + ", " + str(camera.Width) + ", " + str(camera.StatusID) +");"
-        camera.CameraID = DBConn.query_update(query, True)
-
-        # Insert into tCameraDirectory
-        query = "INSERT INTO tCameraDirectory" \
-                " (CameraID, DirectoryPath)" \
-                " VALUES" \
-                " (" + str(camera.CameraID) + ", 'Camera/" + str(camera.CameraID) + "/');"
-        camera_directory_id = DBConn.query_update(query, True)
-        return True
-
-    except Exception as err:
-        print(err)
-        return False
+    # TODO: Update directory path with new camera ID
 
 
-def update_values_into_db(camera):
-    try:
-        internal_ip = get_local_ip()
-        external_ip = get_external_ip()
-        status_id = CameraStatus.CameraStatus.StartingUp.value
+def update_startup_values_into_db(camera):
+    camera.InternalAddress = get_local_ip()
+    camera.ExternalAddress = get_external_ip()
+    camera.CameraStatusID = CameraStatus.CameraBootStart.value
 
-        camera.InternalIPAddress = internal_ip
-        camera.ExternalIPAddress = external_ip
-        camera.StatusID = status_id
-
-        query = "UPDATE tCamera" \
-                " SET" \
-                " InternalIPAddress = '" + camera.InternalIPAddress +"', ExternalIPAddress = '" + camera.ExternalIPAddress + "', CameraStatusID = " + str(camera.StatusID) + \
-                " WHERE CameraID = " + str(camera.CameraID)
-        updated_rows = DBConn.query_update(query, False)
-        # Updated rows will only be greater than 0 if something actually changes
-        # We have to assume that it works
-        return True
-    except Exception as err:
-        print(err)
-        return False
+    update_query = Query()
+    update_query.TransactionType = eTransactionType.Update
+    update_query.Sql = "UPDATE tCameras SET InternalAddress = %s, ExternalAddress = %s, CameraStatusID = %s WHERE CameraID = %s"
+    update_query.Args = [str(camera.InternalAddress), str(camera.ExternalAddress), str(camera.CameraStatusID), str(camera.CameraID)]
+    DBConn.single_query(update_query)
+    __insert_camera_log(camera.CameraID, CameraStatus.CameraBootStart.value, "Camera is starting.")
 
 
-def update_status_id(camera):
-    try:
-        query = "UPDATE tCamera" \
-                " SET" \
-                " CameraStatusID = " + str(camera.StatusID) + \
-                " WHERE CameraID = " + str(camera.CameraID)
-        updated_rows = DBConn.query_update(query, False)
-        # Updated rows will only be greater than 0 if something actually changes
-        # We have to assume that it works
-        return True
-    except Exception as err:
-        print(err)
-        return False
+def update_camera_status(camera_id, status_id, message):
+    # Server ID will not always be known. If it is not passed, look it up
+    if camera_id is None:
+        mac_address = get_current_mac_address()
+        camera = get_camera_from_mac_address(mac_address)
+        camera_id = camera.CameraID
+
+    __update_current_camera_status(camera_id, status_id)
+    __insert_camera_log(camera_id, status_id, message)
+
+
+def __update_current_camera_status(camera_id, status_id):
+    update_query = Query()
+    update_query.TransactionType = eTransactionType.Update
+    update_query.Sql = "Update tCameras SET CameraStatusID = %s WHERE CameraID = %s"
+    update_query.Args = [str(status_id), str(camera_id)]
+    DBConn.single_query(update_query)
+
+
+def __insert_camera_log(camera_id, status_id, message):
+    insert_query = Query()
+    insert_query.TransactionType = eTransactionType.Insert
+    insert_query.Sql = "INSERT INTO tCameraLog(CameraID, CameraStatusID, CameraMessage, LogDateTime) VALUES (%s, %s, %s, %s)"
+    insert_query.Args = [str(camera_id), str(status_id), message, datetime.now()]
+    DBConn.single_query(insert_query)

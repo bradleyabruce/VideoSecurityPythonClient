@@ -1,46 +1,63 @@
 import mysql.connector
 from termcolor import colored
+from Enums.eTransactionType import eTransactionType
+from Objects.Exceptions import DatabaseConnectionException
 
 
+# One thing to note is that the parameter marker in sql statements for MySQL is: '%s'
+# This is opposed to the parameter marker from sqlite which was '?'
 def return_connection():
     try:
         connection = mysql.connector.connect(option_files='data.conf')
-        # print("Connecting to database - Success")
         return connection
     except Exception as e:
         print("Connecting to database - " + colored("Failure", "red"))
-        return None
+        raise DatabaseConnectionException
 
 
-def query_return(query):
+def single_query(query):
     conn = return_connection()
-    cursor = conn.cursor(buffered=True, dictionary=True)
+    # conn.row_factory = dict_factory
+    cursor = conn.cursor(dictionary=True)
+    result = None
     try:
-        cursor.execute(query)
-        result = cursor.fetchall()
-        return result
-    finally:
-        cursor.close()
-        conn.close()
+        if query.TransactionType == eTransactionType.Query:
+            result = (__query_execute(query, cursor))
+        if query.TransactionType == eTransactionType.Insert:
+            result = (__insert_execute(query, cursor))
+        if query.TransactionType == eTransactionType.Update:
+            result = (__update_execute(query, cursor))
 
-
-def query_update(query, is_insert):
-    conn = return_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(query)
+        # commit sql transaction
         conn.commit()
-        if cursor.rowcount > 0:
-            if is_insert:
-                return cursor.lastrowid
-            else:
-                return cursor.rowcount
-        else:
-            return 0
-    except Exception as e:
-        print(e)
-        return 0
+        return result
+
+    except Exception as err:
+        conn.rollback()
+        raise DatabaseConnectionException
     finally:
         cursor.close()
         conn.close()
 
+
+def __query_execute(query, cursor):
+    cursor.execute(query.Sql, query.Args)
+    return cursor.fetchall()
+
+
+def __insert_execute(query, cursor):
+    cursor.execute(query.Sql, query.Args)
+    return cursor.lastrowid
+
+
+def __update_execute(query, cursor):
+    cursor.execute(query.Sql, query.Args)
+    return cursor.rowcount
+
+
+# This is used to help us read query results more easily
+def dict_factory(cursor, row):
+    d = {}
+    for idx, col in enumerate(cursor.description):
+        d[col[0]] = row[idx]
+    return d

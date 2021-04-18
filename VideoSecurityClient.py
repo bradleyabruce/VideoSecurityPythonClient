@@ -3,13 +3,17 @@ import numpy
 from picamera import PiCamera
 from picamera.array import PiRGBArray
 from vidgear.gears import NetGear
-
+import time
+from datetime import datetime
 from BL import CameraBL
 
-# Get camera info from database
-print("Initializing camera...")
+# Start camera
+print(datetime.now().strftime("%d/%m/%Y %H:%M:%S") + " - Initializing camera.")
 camera = CameraBL.startup()
-print("Camera Initialized!")
+if camera is None:
+    quit()
+else:
+    print(datetime.now().strftime("%d/%m/%Y %H:%M:%S") + " - Camera initialized.")
 
 # Camera Properties
 IM_WIDTH = camera.Width
